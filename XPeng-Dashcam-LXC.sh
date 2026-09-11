@@ -19,6 +19,7 @@ set -euo pipefail
 ### ---------------- Review before running ----------------
 CTID=9012
 CT_HOSTNAME="xpeng-dashcam"
+
 BRIDGE="vmbr0"
 NAMESERVER="172.16.25.2"
 
@@ -51,13 +52,13 @@ REPO_URL="https://github.com/psuurbach/xpeng-dashcam.git"
 if pct status "$CTID" >/dev/null 2>&1; then
   echo "CT $CTID already exists - skipping pct create. Delete it first (pct destroy $CTID) if you want a clean re-run." >&2
 else
-  echo "==> Finding a Debian 13 (trixie) template"
+  echo "==> Finding a Debian 13 (trixie) amd64 template"
   pveam update
-  # pve2's mirror carries both amd64 and arm64 builds - pve2 itself is arm64
-  # hardware, so the template must be the arm64 one explicitly.
-  TEMPLATE=$(pveam available --section system | awk '{print $2}' | grep -E '^debian-13-standard.*arm64' | sort -V | tail -1)
+  # pve2's mirror carries both amd64 and arm64 builds per distro - pve2 itself
+  # is amd64 hardware, so the template must be the amd64 one explicitly.
+  TEMPLATE=$(pveam available --section system | awk '{print $2}' | grep -E '^debian-13-standard.*amd64' | sort -V | tail -1)
   if [ -z "$TEMPLATE" ]; then
-    echo "No debian-13-standard arm64 template found via 'pveam available'. Available system templates:" >&2
+    echo "No debian-13-standard amd64 template found via 'pveam available'. Available system templates:" >&2
     pveam available --section system >&2
     echo "Pick one from the list above and set TEMPLATE by hand near the top of this script." >&2
     exit 1
@@ -74,7 +75,7 @@ else
     --memory "$MEMORY" \
     --swap "$SWAP" \
     --rootfs "${STORAGE}:${DISK_SIZE}" \
-    --net0 "name=eth0,bridge=${BRIDGE},tag=${VLAN_TAG},ip=dhcp" \
+    --net0 "name=eth0,bridge=${BRIDGE},ip=dhcp" \
     --nameserver "$NAMESERVER" \
     --unprivileged 1 \
     --features "mount=cifs" \
