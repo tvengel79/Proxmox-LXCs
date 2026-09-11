@@ -53,12 +53,15 @@ REPO_URL="https://github.com/psuurbach/xpeng-dashcam.git"
 if pct status "$CTID" >/dev/null 2>&1; then
   echo "CT $CTID already exists - skipping pct create. Delete it first (pct destroy $CTID) if you want a clean re-run." >&2
 else
-  echo "==> Finding a Debian 12 (bookworm) arm64 template"
+  echo "==> Finding a Debian 13 (trixie) arm64 template"
   pveam update
-  TEMPLATE=$(pveam available --section system | awk '{print $2}' | grep -E '^debian-12-standard.*arm64' | sort -V | tail -1)
+  # pve2's mirror carries both amd64 and arm64 builds - pve2 itself is arm64
+  # hardware, so the template must be the arm64 one explicitly.
+  TEMPLATE=$(pveam available --section system | awk '{print $2}' | grep -E '^debian-13-standard.*arm64' | sort -V | tail -1)
   if [ -z "$TEMPLATE" ]; then
-    echo "No debian-12-standard arm64 template found via 'pveam available'." >&2
-    echo "Run 'pveam available | grep arm64' on pve2, pick one, and set TEMPLATE by hand." >&2
+    echo "No debian-13-standard arm64 template found via 'pveam available'. Available system templates:" >&2
+    pveam available --section system >&2
+    echo "Pick one from the list above and set TEMPLATE by hand near the top of this script." >&2
     exit 1
   fi
   if [ ! -f "/var/lib/vz/template/cache/${TEMPLATE}" ]; then
