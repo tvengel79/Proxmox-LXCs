@@ -106,19 +106,26 @@ apt-get install -y nodejs
 corepack enable
 corepack prepare pnpm@latest --activate
 
-# Fetch and build the app
+# Fetch the app
 git clone '"$REPO_URL"' '"$APP_DIR"'
 cd '"$APP_DIR"'
 pnpm install --frozen-lockfile
+
+# This is a SvelteKit app. It ships configured for @sveltejs/adapter-cloudflare,
+# but its own root layout says "the app has no server routes and no server
+# state" — every route is prerendered (prerender = true / ssr = true). The
+# cloudflare adapter output still depends on a live Worker at runtime though
+# (it serves /_app/env.js as a server route, not a static file, which breaks
+# the app entirely under plain nginx). Since nothing here actually needs a
+# server, swap in @sveltejs/adapter-static so the build is genuinely static —
+# this only changes our local clone/build, not the upstream project.
+sed -i "s#@sveltejs/adapter-cloudflare#@sveltejs/adapter-static#" vite.config.ts
+pnpm add -D @sveltejs/adapter-static
 pnpm build
 
-# This is a SvelteKit app using @sveltejs/adapter-cloudflare — NOT a plain
-# Vite dist/ build. The whole site is prerendered (root +layout.ts sets
-# prerender = true / ssr = true, inherited by every route), so the adapter
-# output at .svelte-kit/cloudflare is genuinely static and nginx can serve
-# it directly; we just do not need wrangler/Cloudflare Workers to run it.
+# adapter-static writes fully static output to build/ by default.
 rm -rf /var/www/html/*
-cp -r .svelte-kit/cloudflare/* /var/www/html/
+cp -r build/* /var/www/html/
 
 cat > /etc/nginx/sites-available/default <<"NGINX"
 server {
