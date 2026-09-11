@@ -24,6 +24,7 @@ BRIDGE="vmbr0"                # matches web1/web2's bridge
 VLAN_TAG="70"                 # 172.16.70.x lives on VLAN 70
 IP="172.16.70.20/24"
 GATEWAY="172.16.70.1"
+NAMESERVER="172.16.25.2"
 DISK_SIZE_GB="8"             # room for apt + node + pnpm store + build output
 MEMORY_MB="1024"
 SWAP_MB="512"
@@ -66,6 +67,7 @@ pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
   --swap "$SWAP_MB" \
   --rootfs "${STORAGE}:${DISK_SIZE_GB}" \
   --net0 "name=eth0,bridge=${BRIDGE},tag=${VLAN_TAG},firewall=1,ip=${IP},gw=${GATEWAY}" \
+  --nameserver "$NAMESERVER" \
   --features "nesting=1" \
   --onboot 1 \
   --start 1
