@@ -46,6 +46,7 @@ pveam update
 TEMPLATE=$(pveam available --section system \
   | awk '{print $2}' \
   | grep "^${TEMPLATE_PATTERN}" \
+  | grep "_amd64\.tar\.zst$" \
   | sort -V | tail -1)
 
 if [ -z "$TEMPLATE" ]; then
