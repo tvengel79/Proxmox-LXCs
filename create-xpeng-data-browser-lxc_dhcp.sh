@@ -112,9 +112,13 @@ cd '"$APP_DIR"'
 pnpm install --frozen-lockfile
 pnpm build
 
-# Serve the static build with nginx, with SPA fallback routing
+# This is a SvelteKit app using @sveltejs/adapter-cloudflare — NOT a plain
+# Vite dist/ build. The whole site is prerendered (root +layout.ts sets
+# prerender = true / ssr = true, inherited by every route), so the adapter
+# output at .svelte-kit/cloudflare is genuinely static and nginx can serve
+# it directly; we just do not need wrangler/Cloudflare Workers to run it.
 rm -rf /var/www/html/*
-cp -r dist/* /var/www/html/
+cp -r .svelte-kit/cloudflare/* /var/www/html/
 
 cat > /etc/nginx/sites-available/default <<"NGINX"
 server {
