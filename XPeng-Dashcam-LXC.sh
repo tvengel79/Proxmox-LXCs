@@ -19,9 +19,7 @@ set -euo pipefail
 ### ---------------- Review before running ----------------
 CTID=9012
 CT_HOSTNAME="xpeng-dashcam"
-
 BRIDGE="vmbr0"
-VLAN_TAG=70
 NAMESERVER="172.16.25.2"
 
 # Container disk (local-lvm, per pve2 convention). Footage itself lives on
@@ -53,7 +51,7 @@ REPO_URL="https://github.com/psuurbach/xpeng-dashcam.git"
 if pct status "$CTID" >/dev/null 2>&1; then
   echo "CT $CTID already exists - skipping pct create. Delete it first (pct destroy $CTID) if you want a clean re-run." >&2
 else
-  echo "==> Finding a Debian 13 (trixie) arm64 template"
+  echo "==> Finding a Debian 13 (trixie) template"
   pveam update
   # pve2's mirror carries both amd64 and arm64 builds - pve2 itself is arm64
   # hardware, so the template must be the arm64 one explicitly.
