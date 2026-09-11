@@ -23,6 +23,7 @@ HOSTNAME="xpeng-data-browser"
 STORAGE="local-lvm"          # <-- verify with `pvesm status`, adjust if needed
 TEMPLATE_STORAGE="local"     # where the CT template lives/gets downloaded
 BRIDGE="vmbr0"                # matches web1/web2's bridge
+VLAN_TAG="70"
 IP="172.16.70.20/24"
 GATEWAY="172.16.70.1"
 DISK_SIZE_GB="8"             # room for apt + node + pnpm store + build output
