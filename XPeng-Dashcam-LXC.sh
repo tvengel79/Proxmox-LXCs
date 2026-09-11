@@ -3,16 +3,25 @@
 #
 # Creates a new LXC on pve2 for the XPENG Dashcam Viewer
 # (https://github.com/psuurbach/xpeng-dashcam) and provisions it:
-# Python venv, ffmpeg, a CIFS mount of the footage share, the app itself,
-# and a systemd service that starts it on boot (after the share is mounted).
+# Python venv, ffmpeg, the app itself, and a systemd service that starts it
+# on boot.
+#
+# NOTE ON THE FOOTAGE MOUNT: earlier versions of this script had the LXC
+# itself mount the CIFS share (via the `mount=cifs` container feature).
+# That hit AppArmor "DENIED" mount/userns_create errors on this host - a
+# known rough edge with CIFS mounts inside unprivileged containers. This
+# version mounts the share on the PROXMOX HOST instead (as root, no
+# namespace restrictions) and bind-mounts that directory straight into the
+# container - the standard, reliable way to hand an LXC a network share.
 #
 # RUN THIS DIRECTLY ON pve2 AS ROOT.
 #   ssh root@pve2
 #   ./create-xpeng-dashcam-lxc.sh
 #
-# It is idempotent-ish: re-running after a partial failure will skip the
-# template download if already present and re-clone/re-run setup safely,
-# but it will NOT re-create the container if $CTID already exists.
+# If CT 9012 already exists from an earlier, broken attempt (wrong
+# architecture template, or the old in-container CIFS mount that failed),
+# destroy it first for a clean run:
+#   pct stop 9012 ; pct destroy 9012
 
 set -euo pipefail
 
@@ -23,10 +32,10 @@ CT_HOSTNAME="xpeng-dashcam"
 BRIDGE="vmbr0"
 NAMESERVER="172.16.25.2"
 
-# Container disk (local-lvm, per pve2 convention). Footage itself lives on
-# the NAS share, not on this disk, so 8G is just for the OS + app + venv +
-# thumbnails/DB (thumbs+db are roughly 1% of the footage archive - bump
-# DISK_SIZE if your archive is large).
+# Container disk (local-lvm, per pve2 convention). Footage lives on the NAS
+# share via a host bind mount, not on this disk, so 8G just covers the OS +
+# app + venv + thumbnails/DB (thumbs+db are roughly 1% of the footage
+# archive - bump DISK_SIZE if your archive is large).
 STORAGE="local-lvm"
 TEMPLATE_STORAGE="local"   # where vztmpl templates live on pve2
 DISK_SIZE="8"              # GB
@@ -36,12 +45,14 @@ SWAP=512                   # MB
 
 TIMEZONE="Europe/Brussels"
 
-# NAS footage share
+# NAS footage share - mounted on the HOST at HOST_MOUNT, then bind-mounted
+# into the container at MOUNT_POINT.
 SMB_SERVER="172.16.10.99"
 SMB_SHARE="xpeng"
 SMB_USER="xpeng"
 SMB_PASS='Buster2800+-!'
-MOUNT_POINT="/mnt/xpeng"
+HOST_MOUNT="/mnt/xpeng-footage"   # on pve2
+MOUNT_POINT="/mnt/xpeng"          # inside the container
 
 APP_USER="xpeng-dashcam"
 APP_DIR="/opt/xpeng-dashcam"
@@ -49,13 +60,50 @@ APP_PORT=8965
 REPO_URL="https://github.com/psuurbach/xpeng-dashcam.git"
 ### ---------------------------------------------------------
 
+MOUNT_UNIT_NAME=$(systemd-escape -p --suffix=mount "$HOST_MOUNT")
+
+echo "==> Making sure cifs-utils is installed on pve2"
+if ! command -v mount.cifs >/dev/null 2>&1; then
+  apt-get update -qq
+  apt-get install -y cifs-utils
+fi
+
+echo "==> SMB credentials + mount unit on the HOST for $HOST_MOUNT"
+install -m 600 /dev/null /etc/xpeng-smb-credentials
+cat > /etc/xpeng-smb-credentials <<CRED
+username=$SMB_USER
+password=$SMB_PASS
+CRED
+chmod 600 /etc/xpeng-smb-credentials
+
+mkdir -p "$HOST_MOUNT"
+cat > "/etc/systemd/system/${MOUNT_UNIT_NAME}" <<UNIT
+[Unit]
+Description=XPENG dashcam footage share (//${SMB_SERVER}/${SMB_SHARE})
+
+[Mount]
+What=//${SMB_SERVER}/${SMB_SHARE}
+Where=${HOST_MOUNT}
+Type=cifs
+Options=credentials=/etc/xpeng-smb-credentials,uid=0,gid=0,file_mode=0644,dir_mode=0755,vers=3.0,_netdev
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now "$MOUNT_UNIT_NAME"
+echo "    mounted: $(mount | grep "$HOST_MOUNT" || echo "NOT MOUNTED - check: systemctl status $MOUNT_UNIT_NAME")"
+
 if pct status "$CTID" >/dev/null 2>&1; then
-  echo "CT $CTID already exists - skipping pct create. Delete it first (pct destroy $CTID) if you want a clean re-run." >&2
+  echo "==> CT $CTID already exists - skipping pct create."
+  echo "    Making sure the bind mount is set (mp0) on the existing CT..."
+  pct set "$CTID" --mp0 "${HOST_MOUNT},mp=${MOUNT_POINT}"
 else
   echo "==> Finding a Debian 13 (trixie) amd64 template"
   pveam update
-  # pve2's mirror carries both amd64 and arm64 builds per distro - pve2 itself
-  # is amd64 hardware, so the template must be the amd64 one explicitly.
+  # pve2's mirror carries both amd64 and arm64 builds per distro - pve2
+  # itself is amd64 hardware, so the template must be the amd64 one.
   TEMPLATE=$(pveam available --section system | awk '{print $2}' | grep -E '^debian-13-standard.*amd64' | sort -V | tail -1)
   if [ -z "$TEMPLATE" ]; then
     echo "No debian-13-standard amd64 template found via 'pveam available'. Available system templates:" >&2
@@ -78,9 +126,18 @@ else
     --net0 "name=eth0,bridge=${BRIDGE},ip=dhcp" \
     --nameserver "$NAMESERVER" \
     --unprivileged 1 \
-    --features "mount=cifs" \
+    --mp0 "${HOST_MOUNT},mp=${MOUNT_POINT}" \
     --onboot 1
 fi
+
+echo "==> Making sure CT $CTID only starts after ${HOST_MOUNT} is mounted"
+mkdir -p "/etc/systemd/system/pve-container@${CTID}.service.d"
+cat > "/etc/systemd/system/pve-container@${CTID}.service.d/xpeng-mount.conf" <<OVERRIDE
+[Unit]
+After=${MOUNT_UNIT_NAME}
+Requires=${MOUNT_UNIT_NAME}
+OVERRIDE
+systemctl daemon-reload
 
 echo "==> Starting CT $CTID"
 pct start "$CTID" >/dev/null 2>&1 || true
@@ -102,10 +159,6 @@ cat > /tmp/xpeng-provision.sh <<PROV
 set -euo pipefail
 
 TIMEZONE="$TIMEZONE"
-SMB_SERVER="$SMB_SERVER"
-SMB_SHARE="$SMB_SHARE"
-SMB_USER="$SMB_USER"
-SMB_PASS='$SMB_PASS'
 MOUNT_POINT="$MOUNT_POINT"
 APP_USER="$APP_USER"
 APP_DIR="$APP_DIR"
@@ -115,41 +168,14 @@ REPO_URL="$REPO_URL"
 echo "==> Base packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y python3 python3-venv python3-pip ffmpeg git cifs-utils ca-certificates
+apt-get install -y python3 python3-venv python3-pip ffmpeg git ca-certificates
 timedatectl set-timezone "\$TIMEZONE"
 
 echo "==> Service account"
 id -u "\$APP_USER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin --home-dir "\$APP_DIR" "\$APP_USER"
 
-echo "==> SMB credentials + mount unit for \$MOUNT_POINT"
-install -m 600 /dev/null /etc/xpeng-smb-credentials
-cat > /etc/xpeng-smb-credentials <<CRED
-username=\$SMB_USER
-password=\$SMB_PASS
-CRED
-chmod 600 /etc/xpeng-smb-credentials
-
-mkdir -p "\$MOUNT_POINT"
-UID_APP=\$(id -u "\$APP_USER")
-GID_APP=\$(id -g "\$APP_USER")
-
-cat > /etc/systemd/system/mnt-xpeng.mount <<UNIT
-[Unit]
-Description=XPENG dashcam footage share (//\$SMB_SERVER/\$SMB_SHARE)
-
-[Mount]
-What=//\$SMB_SERVER/\$SMB_SHARE
-Where=\$MOUNT_POINT
-Type=cifs
-Options=credentials=/etc/xpeng-smb-credentials,uid=\$UID_APP,gid=\$GID_APP,file_mode=0644,dir_mode=0755,vers=3.0,_netdev
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-systemctl daemon-reload
-systemctl enable --now mnt-xpeng.mount
-echo "    mounted: \$(mount | grep "\$MOUNT_POINT" || echo 'NOT MOUNTED - check systemctl status mnt-xpeng.mount')"
+echo "==> Confirming \$MOUNT_POINT is populated (bind-mounted by the host)"
+ls "\$MOUNT_POINT" >/dev/null 2>&1 && echo "    OK: \$(ls "\$MOUNT_POINT" | wc -l) entries" || echo "    WARNING: \$MOUNT_POINT looks empty - check the host-side mount"
 
 echo "==> Fetching xpeng-dashcam"
 mkdir -p "\$APP_DIR"
@@ -181,9 +207,8 @@ echo "==> systemd service"
 cat > /etc/systemd/system/xpeng-dashcam.service <<UNIT
 [Unit]
 Description=XPENG Dashcam Viewer
-After=network-online.target mnt-xpeng.mount
+After=network-online.target
 Wants=network-online.target
-RequiresMountsFor=\$MOUNT_POINT
 
 [Service]
 Type=simple
@@ -204,21 +229,22 @@ systemctl enable --now xpeng-dashcam.service
 echo "==> Done. Service status:"
 systemctl --no-pager status xpeng-dashcam.service || true
 
-# Credential hygiene: this provisioning script (with the SMB password baked
-# in) has served its purpose - remove it so it isn't left lying around.
-shred -u "\$0" 2>/dev/null || rm -f "\$0"
+# Nothing sensitive is left in this script (credentials live only on the
+# host now), but clean up anyway.
+rm -f "\$0"
 PROV
 
 echo "==> Pushing provisioning script into CT $CTID and running it"
 pct push "$CTID" /tmp/xpeng-provision.sh /root/xpeng-provision.sh --perms 700
 pct exec "$CTID" -- /root/xpeng-provision.sh
-shred -u /tmp/xpeng-provision.sh 2>/dev/null || rm -f /tmp/xpeng-provision.sh
+rm -f /tmp/xpeng-provision.sh
 
 echo
 echo "================================================================"
 echo " CT $CTID ($CT_HOSTNAME) is up."
 echo " Viewer:   http://${IP:-<ct-ip>}:$APP_PORT"
-echo " Footage:  //$SMB_SERVER/$SMB_SHARE mounted at $MOUNT_POINT"
+echo " Footage:  //$SMB_SERVER/$SMB_SHARE mounted on the HOST at $HOST_MOUNT,"
+echo "           bind-mounted into the CT at $MOUNT_POINT"
 echo
 echo " Next (build the index - the viewer is empty until this runs):"
 echo "   pct exec $CTID -- su -s /bin/bash $APP_USER -c '"
