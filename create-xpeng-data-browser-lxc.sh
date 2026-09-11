@@ -11,9 +11,7 @@
 # (not a multi-line pct create one-liner) specifically to avoid the
 # backslash line-continuation trap.
 #
-# BEFORE RUNNING: check the STORAGE variable below against your actual
-# pool name (`pvesm status`) — it defaults to "local-lvm", which is the
-# common default but wasn't confirmed for this host.
+# Confirmed working on pve2 (x86_64, storage pool "local-lvm").
 
 set -euo pipefail
 
@@ -23,7 +21,7 @@ HOSTNAME="xpeng-data-browser"
 STORAGE="local-lvm"          # <-- verify with `pvesm status`, adjust if needed
 TEMPLATE_STORAGE="local"     # where the CT template lives/gets downloaded
 BRIDGE="vmbr0"                # matches web1/web2's bridge
-VLAN_TAG="70"
+VLAN_TAG="70"                 # 172.16.70.x lives on VLAN 70
 IP="172.16.70.20/24"
 GATEWAY="172.16.70.1"
 DISK_SIZE_GB="8"             # room for apt + node + pnpm store + build output
@@ -50,7 +48,7 @@ TEMPLATE=$(pveam available --section system \
   | sort -V | tail -1)
 
 if [ -z "$TEMPLATE" ]; then
-  echo "No template matching '${TEMPLATE_PATTERN}' found in the catalog." >&2
+  echo "No amd64 template matching '${TEMPLATE_PATTERN}' found in the catalog." >&2
   exit 1
 fi
 
@@ -67,7 +65,7 @@ pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
   --memory "$MEMORY_MB" \
   --swap "$SWAP_MB" \
   --rootfs "${STORAGE}:${DISK_SIZE_GB}" \
-  --net0 "name=eth0,bridge=${BRIDGE},firewall=1,ip=${IP},gw=${GATEWAY}" \
+  --net0 "name=eth0,bridge=${BRIDGE},tag=${VLAN_TAG},firewall=1,ip=${IP},gw=${GATEWAY}" \
   --features "nesting=1" \
   --onboot 1 \
   --start 1
